@@ -1,0 +1,88 @@
+services:
+  scylla-db:
+    image: scylladb/scylla:latest
+    container_name: scylla-db
+    ports:
+      - "9042:9042"
+    restart: unless-stopped
+    environment:
+      - SCYLLA_AUTHENTICATOR=PasswordAuthenticator
+
+  redis:
+    image: redis:alpine
+    container_name: redis
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
+  migrate:
+    image: scylladb/scylla:latest
+    container_name: scylla-migrate
+    depends_on:
+      - scylla-db
+    volumes:
+      - ./init.cql:/init.cql
+    entrypoint: >
+      bash -c "
+      echo '⏳ Waiting for ScyllaDB to be ready...' &&
+      until cqlsh scylla-db -u cassandra -p cassandra -f /init.cql >/dev/null 2>&1; do
+        sleep 5
+      done &&
+      echo '✅ ScyllaDB initialization completed successfully.' &&
+      exit 0
+      "
+    restart: "no"
+
+  salary-api:
+    image: doc-salary-api:latest
+    container_name: salary-api
+    depends_on:
+      - migrate
+    ports:
+      - "8083:8080"
+    environment:
+      - SCYLLA_HOST=scylla-db
+      - SCYLLA_PORT=9042
+      - SCYLLA_KEYSPACE=employee_DB
+      - SCYLLA_USERNAME=scylladb
+      - SCYLLA_PASSWORD=password
+      - REDIS_HOST=redis
+      # OTEL Configuration
+      - OTEL_SERVICE_NAME=salary-api
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://172.31.93.81:4319
+      - OTEL_EXPORTER_OTLP_PROTOCOL=grpc
+      - OTEL_METRICS_EXPORTER=otlp
+      - OTEL_TRACES_EXPORTER=otlp
+      - OTEL_LOGS_EXPORTER=otlp
+      - MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE=health,info,prometheus
+      - MANAGEMENT_METRICS_EXPORT_PROMETHEUS_ENABLED=true
+    restart: unless-stopped
+
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: node-exporter
+    ports:
+      - "19100:9100"
+    restart: unless-stopped
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.rootfs=/rootfs'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+
+  fluent-bit:
+    image: fluent/fluent-bit:latest
+    container_name: fluent-bit
+    user: root
+    ports:
+      - "24224:24224"
+      - "24224:24224/udp"
+    volumes:
+      - /var/log:/var/log
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - ./fluent-bit.conf:/fluent-bit/etc/fluent-bit.conf
+    restart: unless-stopped
