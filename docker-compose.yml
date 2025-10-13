@@ -49,6 +49,7 @@ services:
       - REDIS_HOST=redis
       # OTEL Configuration
       - OTEL_SERVICE_NAME=salary-api
+    #  - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4319
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://172.31.93.81:4319
       - OTEL_EXPORTER_OTLP_PROTOCOL=grpc
       - OTEL_METRICS_EXPORTER=otlp
@@ -56,6 +57,9 @@ services:
       - OTEL_LOGS_EXPORTER=otlp
       - MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE=health,info,prometheus
       - MANAGEMENT_METRICS_EXPORT_PROMETHEUS_ENABLED=true
+    volumes:
+     - ./opentelemetry-javaagent.jar:/app/opentelemetry-javaagent.jar
+    entrypoint: ["java", "-javaagent:/app/opentelemetry-javaagent.jar", "-jar", "/app/app.jar"]
     restart: unless-stopped
 
   node-exporter:
@@ -81,8 +85,10 @@ services:
     ports:
       - "24224:24224"
       - "24224:24224/udp"
+      - "2020:2020"
     volumes:
       - /var/log:/var/log
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
-      - ./fluent-bit.conf:/fluent-bit/etc/fluent-bit.conf
+      - ./fluent-bit.conf:/fluent-bit/etc/fluent-bit.conf:ro
+      - ./parsers.conf:/fluent-bit/etc/parsers.conf:ro
     restart: unless-stopped
