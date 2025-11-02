@@ -1,3 +1,5 @@
+version: "3.8"
+
 services:
   scylla-db:
     image: scylladb/scylla:latest
@@ -5,8 +7,25 @@ services:
     ports:
       - "9042:9042"
     restart: unless-stopped
+    command:
+      - "--smp"
+      - "1"
+      - "--memory"
+      - "750M"
+      - "--overprovisioned"
+      - "1"
+      - "--authenticator"
+      - "PasswordAuthenticator"
+      - "--authorizer"
+      - "CassandraAuthorizer"
     environment:
       - SCYLLA_AUTHENTICATOR=PasswordAuthenticator
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -u cassandra -p cassandra -e 'DESCRIBE KEYSPACES;' || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
 
   redis:
     image: redis:alpine
@@ -14,22 +33,36 @@ services:
     ports:
       - "6379:6379"
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   migrate:
     image: scylladb/scylla:latest
     container_name: scylla-migrate
     depends_on:
-      - scylla-db
+      scylla-db:
+        condition: service_healthy
     volumes:
       - ./init.cql:/init.cql
     entrypoint: >
       bash -c "
-      echo '⏳ Waiting for ScyllaDB to be ready...' &&
-      until cqlsh scylla-db -u cassandra -p cassandra -f /init.cql >/dev/null 2>&1; do
-        sleep 5
-      done &&
-      echo '✅ ScyllaDB initialization completed successfully.' &&
-      exit 0
+      echo '⏳ Waiting for ScyllaDB to accept CQL connections...' &&
+      until cqlsh scylla-db -u cassandra -p cassandra -e 'DESCRIBE KEYSPACES;' >/dev/null 2>&1; do
+        echo '⏱️ Scylla not ready yet... retrying in 10s';
+        sleep 10;
+      done;
+      echo '✅ Scylla is ready. Running init.cql...' &&
+      if cqlsh scylla-db -u cassandra -p cassandra -f /init.cql; then
+        echo '✅ ScyllaDB initialization completed successfully.';
+        exit 0;
+      else
+        echo '❌ Migration failed. Check your init.cql file for errors.';
+        cqlsh scylla-db -u cassandra -p cassandra -e 'DESCRIBE KEYSPACES;';
+        exit 1;
+      fi
       "
     restart: "no"
 
@@ -37,29 +70,51 @@ services:
     image: doc-salary-api:latest
     container_name: salary-api
     depends_on:
-      - migrate
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
     ports:
-      - "8083:8080"
+      - "8080:8080"
     environment:
+      # 🔹 Database & Cache
       - SCYLLA_HOST=scylla-db
       - SCYLLA_PORT=9042
-      - SCYLLA_KEYSPACE=employee_DB
-      - SCYLLA_USERNAME=scylladb
-      - SCYLLA_PASSWORD=password
+      - SCYLLA_KEYSPACE=employee_db
+      - SCYLLA_USERNAME=cassandra
+      - SCYLLA_PASSWORD=cassandra
       - REDIS_HOST=redis
-      # OTEL Configuration
+
+      # 🔹 OpenTelemetry Configuration (update IP to your monitoring EC2)
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://54.203.115.57:4319
       - OTEL_SERVICE_NAME=salary-api
-    #  - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4319
-      - OTEL_EXPORTER_OTLP_ENDPOINT=http://172.31.93.81:4319
-      - OTEL_EXPORTER_OTLP_PROTOCOL=grpc
-      - OTEL_METRICS_EXPORTER=otlp
-      - OTEL_TRACES_EXPORTER=otlp
-      - OTEL_LOGS_EXPORTER=otlp
+      - OTEL_SDK_DISABLED=false
+
+      # 🔹 Prometheus Metrics
       - MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE=health,info,prometheus
       - MANAGEMENT_METRICS_EXPORT_PROMETHEUS_ENABLED=true
+
+      # 🔹 Logging & Spring Settings
+      - SPRING_PROFILES_ACTIVE=debug
+      - LOGGING_LEVEL_ORG_SPRINGFRAMEWORK=DEBUG
+      - LOGGING_LEVEL_COM_DATACENTER=DEBUG
+      - SPRING_DATA_CASSANDRA_CONNECTION_INIT_QUERY_TIMEOUT=10
+      - SPRING_DATA_CASSANDRA_REQUEST_TIMEOUT=10000
+      - SPRING_DATA_CASSANDRA_CONTACT_POINTS=scylla-db:9042
+      - SPRING_DATA_CASSANDRA_KEYSPACE=employee_db
+      - SPRING_DATA_CASSANDRA_LOCAL_DATACENTER=datacenter1
+
     volumes:
-     - ./opentelemetry-javaagent.jar:/app/opentelemetry-javaagent.jar
-    entrypoint: ["java", "-javaagent:/app/opentelemetry-javaagent.jar", "-jar", "/app/app.jar"]
+      - ./opentelemetry-javaagent.jar:/app/opentelemetry-javaagent.jar
+    entrypoint:
+      [
+        "java",
+        "-javaagent:/app/opentelemetry-javaagent.jar",
+        "-Dotel.exporter.otlp.endpoint=http://54.203.115.57:4317",
+        "-Dotel.service.name=salary-api",
+        "-jar",
+        "/app/app.jar"
+      ]
     restart: unless-stopped
 
   node-exporter:
