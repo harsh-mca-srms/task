@@ -15,6 +15,9 @@ HTTP_Server On	Monitoring ke liye internal metrics web server enable karega.
 HTTP_Listen 0.0.0.0	Sab IPs se HTTP access allow karega.
 HTTP_Port 2020	Metrics endpoint chalega http://<ip>:2020.
 
+Ye port Fluent Bit ka internal monitoring endpoint ke liye hota hai —
+basically ek HTTP status / metrics server hota hai, jisse aap check kar sakte ho ki Fluent Bit chal raha hai ya nahi, aur uska health / stats kya hai.
+
 👉 Ye section basically Fluent Bit ke own control & monitoring interface setup karta hai.
 
 📥 2. [INPUT] — Log sources (kahan se logs uthaye)
